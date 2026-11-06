@@ -1,0 +1,30 @@
+// Ausführen: node tests/core.test.mjs (Node.js 20+). Keine Pakete nötig.
+import fs from 'node:fs';
+import vm from 'node:vm';
+import {webcrypto} from 'node:crypto';
+import assert from 'node:assert/strict';
+const source=fs.readFileSync(new URL('../core.js',import.meta.url),'utf8');
+const context=vm.createContext({crypto:webcrypto});
+vm.runInContext(source.replace(/export /g,'')+'\nglobalThis.core={initial,validate,gradeCard,stats,promptFor,day};',context);
+const {initial,validate,gradeCard,stats,promptFor,day}=context.core;
+let count=0;
+function test(name,fn){fn();count++;console.log('✓ '+name);}
+const card={id:'test',term:'Metakognition',definition:'Über eigenes Denken nachdenken.',category:'Lernen',level:0,due:1000};
+test('Sechs verlangte Modi, keine Demo-Fortschritte',()=>{const s=initial();assert.equal(s.modes.length,6);assert.equal(s.cards.length,0);assert.ok(!s.modes.some(m=>/Alltag|Projekte/.test(m.name)));validate(s);});
+test('Backup-Rundlauf erhält sämtliche Daten',()=>{const s=initial();s.cards.push(card);s.notes='Gedanke äöü';s.reviews.push({cardId:'test',date:day(),grade:'good'});const r=validate(JSON.parse(JSON.stringify(s)));assert.equal(JSON.stringify(r),JSON.stringify(s));});
+test('Unbekannte Version wird abgelehnt',()=>assert.throws(()=>validate({...initial(),version:2})));
+test('Fehlende Struktur wird abgelehnt',()=>assert.throws(()=>validate({})));
+test('Doppelte Karten-IDs werden abgelehnt',()=>{const s=initial();s.cards=[card,card];assert.throws(()=>validate(s));});
+test('Doppelte Modus-IDs werden abgelehnt',()=>{const s=initial();s.modes.push(s.modes[0]);assert.throws(()=>validate(s));});
+test('Ungültige Stufen und Zeitwerte werden abgelehnt',()=>{for(const change of [{level:-1},{level:6},{level:1.5},{due:NaN},{due:-1},{term:''},{definition:null}]){const s=initial();s.cards=[{...card,...change}];assert.throws(()=>validate(s));}});
+test('Ungültige Sprachoptionen werden abgelehnt',()=>{const s=initial();s.settings.rate=9;assert.throws(()=>validate(s));});
+test('Ungültige Lernbewertung wird abgelehnt',()=>{const s=initial();s.reviews=[{cardId:'test',date:day(),grade:'fake'}];assert.throws(()=>validate(s));assert.throws(()=>gradeCard(card,'fake'));});
+test('Sichere Antworten folgen 1/3/7/14/30 Tagen',()=>{let c=card;for(const days of [1,3,7,14,30,30]){c=gradeCard(c,'good',1000);assert.equal(c.due,1000+days*86400000);}assert.equal(c.level,5);});
+test('Unsicher setzt Stufe zurück, erneut in 10 Minuten',()=>{const c=gradeCard({...card,level:4},'again',1000);assert.equal(c.level,0);assert.equal(c.due,601000);});
+test('Mit Mühe: eine Stufe zurück, morgen',()=>{const c=gradeCard({...card,level:3},'hard',1000);assert.equal(c.level,2);assert.equal(c.due,86401000);assert.equal(gradeCard(card,'hard').level,0);});
+test('Bewertung mutiert Originalkarte nicht',()=>{gradeCard(card,'good');assert.equal(card.level,0);});
+test('Dashboard: fällig, gefestigt und heute',()=>{const s=initial();s.cards=[card,{...card,id:'two',level:3,due:3000}];s.reviews=[{cardId:'test',date:day(),grade:'good'}];const v=stats(s,2000);assert.equal(v.total,2);assert.equal(v.due,1);assert.equal(v.secure,1);assert.equal(v.today,1);});
+test('Prompt enthält Rolle, Auftrag und Thema',()=>{const p=promptFor({name:'Modus',role:'Prüfer',prompt:'Prüfe genau'},'Thema',[]);for(const t of ['Prüfer','Prüfe genau','Thema','keinen Zugriff'])assert.ok(p.includes(t));assert.ok(!p.includes('Metakognition'));});
+test('Kartenkontext wird nur explizit eingebunden',()=>{assert.ok(promptFor(initial().modes[0],'',[card]).includes('Metakognition'));});
+for(const name of ['app.js','sw.js'])test(name+' Syntax',()=>{const code=fs.readFileSync(new URL('../'+name,import.meta.url),'utf8').replace(/^import .*;\n/,'');new vm.Script(code);});
+console.log(`${count} Tests bestanden.`);
